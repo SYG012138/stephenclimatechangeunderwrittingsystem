@@ -26,7 +26,7 @@ def project_emissions(initial_emissions: float, five_year_target_pct: float, yea
     """Linear annual pathway ending exactly at the stated reduction target in year five."""
     if initial_emissions < 0 or not 0 <= five_year_target_pct <= 100 or years < 1:
         raise ValueError("Emissions and target must be non-negative, target <= 100%, and years >= 1.")
-    return [initial_emissions * (1 - (five_year_target_pct / 100) * (year / years))
+    return [initial_emissions * (1 - (five_year_target_pct / 100) * ((year + 1) / years))
             for year in range(years)]
 
 def run_stress(data: dict, carbon_tax_usd_per_ton: float, reduction_target_pct: float,
