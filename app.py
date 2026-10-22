@@ -146,25 +146,24 @@ with tab_scenarios:
                     title="Projected DSCR under carbon-price scenarios")
     chart.add_hline(y=dscr_threshold, line_dash="dash", annotation_text="Internal screening level")
     st.plotly_chart(chart, use_container_width=True)
-    st.subheader("Sensitivity matrix")
+    st.subheader("Sensitivity matrix: carbon price vs. five-year reduction target")
+    st.caption("Each cell is the minimum projected DSCR under the selected baseline emissions, facility assumptions, and carbon price / target combination.")
     tax_range = sorted(set([0.0, round(carbon_tax*0.5,2), round(carbon_tax,2), round(carbon_tax*1.5,2), round(carbon_tax*2,2)]))
-    capex_range = [0, 20, 30, 40, 60, 80, 100]
+    target_range = [0, 10, 20, 30, 40, 50, 60]
     matrix = []
     for tax in tax_range:
         row = []
-        for capex in capex_range:
-            # The custom-policy screen is displayed separately; CapEx does not magically change emissions.
-            rows = run_stress(data, tax, sbti_target_pct, PROJECTION_YEARS, fx,
+        for target in target_range:
+            rows = run_stress(data, tax, target, PROJECTION_YEARS, fx,
                               interest_rate_pct/100, principal_share_pct/100)
             vals = [r["DSCR (x)"] for r in rows if r["DSCR (x)"] is not None]
             row.append(round(min(vals),2) if vals else None)
         matrix.append(row)
     heat_df = pd.DataFrame(matrix, index=[f"{x:g} USD/t" for x in tax_range],
-                           columns=[f"{x}%" for x in capex_range])
-    heat = px.imshow(heat_df, labels={"x":"Green CapEx ratio (context only)","y":"Carbon price","color":"Minimum DSCR (x)"},
+                           columns=[f"{x}%" for x in target_range])
+    heat = px.imshow(heat_df, labels={"x":"Five-year emissions reduction target","y":"Carbon price","color":"Minimum DSCR (x)"},
                      aspect="auto", color_continuous_scale="RdYlGn")
     st.plotly_chart(heat, use_container_width=True)
-    st.caption("CapEx columns are context-only in this financial sensitivity: no causal emissions benefit is assumed without project-level evidence.")
 
 with tab_structuring:
     st.subheader("Illustrative sustainability-linked loan pricing")
