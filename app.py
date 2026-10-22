@@ -1,328 +1,219 @@
-import streamlit as st
 import pandas as pd
-import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
+import streamlit as st
 
-# ==========================================
-# PAGE CONFIGURATION & LUXURY STYLING
-# ==========================================
-st.set_page_config(
-    page_title="Stephen ClimateCredit Underwriting System",
-    page_icon="🏦",
-    layout="wide",
-    initial_sidebar_state="expanded"
+from calculations import run_stress, validate_inputs
+from config import (
+    USD_HKD, BASE_INTEREST_RATE, ANNUAL_PRINCIPAL_REPAYMENT_SHARE_OF_SUBJECT_LOAN,
+    PROJECTION_YEARS, DSCR_SCREENING_LEVEL, BASE_MARGIN_BPS,
+    ILLUSTRATIVE_SLL_DISCOUNT_BPS, ILLUSTRATIVE_RISK_PREMIUM_BPS,
+    TAXONOMY_FRAMEWORKS,
 )
+from methodology import assess_taxonomy, credit_screen, illustrative_pricing
 
-st.markdown("""
-<style>
-    /* Global App Background & CJK Font Fallback Support */
-    .stApp {
-        background-color: #f8fafc;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, "Microsoft JhengHei", "Microsoft YaHei", "PingFang TC", "PingFang SC", sans-serif;
-    }
-    
-    /* Header Typography */
-    .main-header {
-        font-size: 2.3rem;
-        font-weight: 800;
-        color: #0f172a;
-        letter-spacing: -0.025em;
-        margin-bottom: 0.1rem;
-    }
-    .sub-header {
-        font-size: 1.1rem;
-        color: #64748b;
-        font-weight: 400;
-        margin-bottom: 1.8rem;
-    }
-    
-    /* Enterprise Card Styling */
-    .card {
-        padding: 1.5rem;
-        border-radius: 0.75rem;
-        background-color: #ffffff;
-        border: 1px solid #e2e8f0;
-        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.04), 0 2px 4px -1px rgba(0, 0, 0, 0.02);
-        margin-bottom: 1.2rem;
-    }
-    
-    /* Section Divider */
-    hr {
-        margin: 2rem 0;
-        border: none;
-        border-top: 1px solid #e2e8f0;
-    }
-</style>
-""", unsafe_allow_html=True)
+st.set_page_config(page_title="ClimateCredit Underwriting System", page_icon="🏦", layout="wide")
+st.markdown("""<style>
+.stApp { background:#f7f9fc; }
+.block-container { padding-top:1.7rem; }
+[data-testid="stMetric"] { background:white; border:1px solid #e2e8f0; padding:1rem; border-radius:.7rem; }
+.small-note { color:#64748b; font-size:.9rem; }
+</style>""", unsafe_allow_html=True)
 
-# ==========================================
-# PRE-LOADED DATA (HKEX COMPANIES)
-# ==========================================
+st.title("🏦 ClimateCredit Underwriting System")
+st.caption("Corporate climate-transition risk, scenario analysis and illustrative sustainability-linked loan structuring")
+st.warning("Decision-support prototype only — not a regulatory-approved credit model, taxonomy certification, IFRS 9 staging decision, legal opinion or lending recommendation.", icon="⚠️")
+
 COMPANY_DATA = {
-    "Custom Input Mode": {
-        "revenue": 10000.0,
-        "ebitda": 2000.0,
-        "total_debt": 5000.0,
-        "loan_amount": 1000.0,
-        "emissions": 850000.0,
-        "sbti_target": 15.0,
-        "green_capex": 20.0,
-        "carbon_tax": 50.0
-    },
-    "Geely Auto (0175.HK)": {
-        "revenue": 179200.0,
-        "ebitda": 14500.0,
-        "total_debt": 42000.0,
-        "loan_amount": 5000.0,
-        "emissions": 1250000.0,
-        "sbti_target": 25.0,
-        "green_capex": 35.0,
-        "carbon_tax": 75.0
-    },
-    "Cathay Pacific (0293.HK)": {
-        "revenue": 94800.0,
-        "ebitda": 15100.0,
-        "total_debt": 68000.0,
-        "loan_amount": 8000.0,
-        "emissions": 14200000.0,
-        "sbti_target": 12.0,
-        "green_capex": 10.0,
-        "carbon_tax": 100.0
-    },
-    "CR Building Materials (1313.HK)": {
-        "revenue": 31500.0,
-        "ebitda": 4800.0,
-        "total_debt": 15000.0,
-        "loan_amount": 3000.0,
-        "emissions": 28500000.0,
-        "sbti_target": 18.0,
-        "green_capex": 15.0,
-        "carbon_tax": 80.0
-    }
+    "Custom Input Mode": {"revenue":10000.0,"ebitda":2000.0,"total_debt":5000.0,"loan_amount":1000.0,"emissions":850000.0,"sbti_target_pct":15.0,"green_capex_pct":20.0,"carbon_tax":50.0},
+    "Geely Auto (0175.HK) — illustrative": {"revenue":179200.0,"ebitda":14500.0,"total_debt":42000.0,"loan_amount":5000.0,"emissions":1250000.0,"sbti_target_pct":25.0,"green_capex_pct":35.0,"carbon_tax":75.0},
+    "Cathay Pacific (0293.HK) — illustrative": {"revenue":94800.0,"ebitda":15100.0,"total_debt":68000.0,"loan_amount":8000.0,"emissions":14200000.0,"sbti_target_pct":12.0,"green_capex_pct":10.0,"carbon_tax":100.0},
+    "CR Building Materials (1313.HK) — illustrative": {"revenue":31500.0,"ebitda":4800.0,"total_debt":15000.0,"loan_amount":3000.0,"emissions":28500000.0,"sbti_target_pct":18.0,"green_capex_pct":15.0,"carbon_tax":80.0},
 }
+with st.sidebar:
+    st.header("Underwriting inputs")
+    company = st.selectbox("Illustrative borrower case", list(COMPANY_DATA))
+    defaults = COMPANY_DATA[company]
+    st.caption("Presets are demonstration inputs, not verified current company disclosures.")
+    st.subheader("Financials (HKD millions)")
+    revenue = st.number_input("Revenue (HKD M)", min_value=0.0, value=defaults["revenue"], step=100.0)
+    ebitda = st.number_input("Baseline EBITDA (HKD M)", min_value=0.0, value=defaults["ebitda"], step=50.0)
+    total_debt = st.number_input("Total debt (HKD M)", min_value=0.0, value=defaults["total_debt"], step=100.0)
+    loan_amount = st.number_input("Subject loan (HKD M)", min_value=0.0, value=defaults["loan_amount"], step=50.0)
+    st.subheader("Climate inputs")
+    emissions = st.number_input("Scope 1 & 2 emissions (tCO₂e/year)", min_value=0.0, value=defaults["emissions"], step=10000.0)
+    sbti_target_pct = st.slider("Five-year emissions reduction target (%)", 0.0, 100.0, float(defaults["sbti_target_pct"]), 1.0)
+    green_capex_pct = st.slider("Green CapEx ratio (%)", 0.0, 100.0, float(defaults["green_capex_pct"]), 1.0)
+    carbon_tax = st.slider("Carbon price shock (USD/tCO₂e)", 0.0, 500.0, float(defaults["carbon_tax"]), 5.0)
+    st.subheader("Model assumptions")
+    fx = st.number_input("FX (HKD per USD)", min_value=0.01, value=float(USD_HKD), step=0.1)
+    interest_rate_pct = st.number_input("Illustrative interest rate on total debt (%)", min_value=0.0, max_value=100.0, value=BASE_INTEREST_RATE*100, step=0.25)
+    principal_share_pct = st.number_input("Annual principal repayment (% of subject loan)", min_value=0.0, max_value=100.0, value=ANNUAL_PRINCIPAL_REPAYMENT_SHARE_OF_SUBJECT_LOAN*100, step=1.0)
+    dscr_threshold = st.number_input("Internal DSCR screening level (x)", min_value=0.1, max_value=10.0, value=float(DSCR_SCREENING_LEVEL), step=0.05)
+    framework = st.selectbox("Taxonomy framework", list(TAXONOMY_FRAMEWORKS))
+    evidence_complete = st.checkbox("Supporting taxonomy evidence assembled")
+    if TAXONOMY_FRAMEWORKS[framework]["mode"] == "thresholds":
+        st.caption("Internal policy only — not a regulatory taxonomy test.")
+        custom_capex_threshold = st.slider("Internal Green CapEx threshold (%)", 0.0, 100.0, 30.0, 1.0)
+        custom_target_threshold = st.slider("Internal five-year target threshold (%)", 0.0, 100.0, 20.0, 1.0)
+    else:
+        custom_capex_threshold, custom_target_threshold = 30.0, 20.0
 
-# ==========================================
-# SIDEBAR - CASE SELECTOR & INPUTS
-# ==========================================
-st.sidebar.markdown("## ⚙️ Control Panel")
-selected_company = st.sidebar.selectbox("Select Company Case", list(COMPANY_DATA.keys()))
+data = {"revenue":revenue,"ebitda":ebitda,"total_debt":total_debt,"loan_amount":loan_amount,
+        "emissions":emissions,"carbon_tax":carbon_tax,"green_capex_pct":green_capex_pct,
+        "sbti_target_pct":sbti_target_pct}
+errors = validate_inputs(data)
+if errors:
+    st.error("Please resolve input validation issues:")
+    for error in errors:
+        st.write(f"- {error}")
+    st.stop()
+if revenue > 0:
+    st.caption(f"Baseline EBITDA margin: {ebitda/revenue:.1%} · Preset: {company}")
+else:
+    st.info("Revenue is zero; EBITDA margin is not defined.")
 
-defaults = COMPANY_DATA[selected_company]
-
-st.sidebar.markdown("---")
-st.sidebar.markdown("### 📊 Financial Inputs (HKD M)")
-rev_input = st.sidebar.number_input("Revenue", value=defaults["revenue"], step=100.0)
-ebitda_input = st.sidebar.number_input("EBITDA", value=defaults["ebitda"], step=50.0)
-total_debt_input = st.sidebar.number_input("Total Debt", value=defaults["total_debt"], step=100.0)
-loan_amount_input = st.sidebar.number_input("Subject Loan Amount", value=defaults["loan_amount"], step=50.0)
-
-st.sidebar.markdown("---")
-st.sidebar.markdown("### 🌍 Climate & Transition Inputs")
-emissions_input = st.sidebar.number_input("Scope 1 & 2 Emissions (tCO2e)", value=defaults["emissions"], step=10000.0)
-sbti_input = st.sidebar.slider("SBTi 5-Year Reduction Target (%)", 0.0, 60.0, defaults["sbti_target"], 1.0)
-green_capex_input = st.sidebar.slider("Green CapEx Ratio (%)", 0.0, 100.0, defaults["green_capex"], 1.0)
-carbon_tax_input = st.sidebar.slider("Carbon Tax Shock Scenario (USD/ton)", 0.0, 200.0, defaults["carbon_tax"], 5.0)
-
-USD_HKD = 7.8
-
-# ==========================================
-# MAIN TITLE & OVERVIEW
-# ==========================================
-st.markdown('<p class="main-header">🏦 Stephen ClimateCredit Underwriting System</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-header">Automated Corporate Transition Credit Assessment, Stress Testing & SLL Pricing under HKMA SPM GS-2 Guidelines</p>', unsafe_allow_html=True)
-
-# ==========================================
-# TABS SETUP
-# ==========================================
-tab1, tab2, tab3 = st.tabs([
-    "📈 Risk Assessment & Stress Testing", 
-    "💡 Underwriting Structuring & Subsidies", 
-    "📝 Practitioner Feedback Survey"
+tab_overview, tab_scenarios, tab_structuring, tab_feedback = st.tabs([
+    "Executive overview", "Stress testing & sensitivity", "Structuring & pricing", "Feedback"
 ])
 
-# ==========================================
-# TAB 1: RISK ASSESSMENT & STRESS TESTING
-# ==========================================
-with tab1:
-    st.markdown("### 1. Phase 2A Taxonomy Alignment Check")
-    
-    is_capex_aligned = green_capex_input >= 30.0
-    is_sbti_aligned = sbti_input >= 20.0
-    is_fully_aligned = is_capex_aligned and is_sbti_aligned
-    
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Green CapEx Benchmark", f"{green_capex_input}%", "Target: ≥ 30%", delta_color="normal" if is_capex_aligned else "inverse")
-    with col2:
-        st.metric("SBTi Target Benchmark", f"{sbti_input}%", "Target: ≥ 20%", delta_color="normal" if is_sbti_aligned else "inverse")
-    with col3:
-        alignment_status = "🟢 Taxonomy Aligned (Green)" if is_fully_aligned else "🔴 Non-Aligned (Transition/Brown)"
-        st.metric("Taxonomy Status", alignment_status)
+tax_assessment = assess_taxonomy(framework, green_capex_pct, sbti_target_pct, evidence_complete,
+                                 custom_capex_threshold, custom_target_threshold)
+# This demo models a simple straight-line emissions pathway that reaches the stated target at year five.
+baseline_rows = run_stress(data, carbon_tax, sbti_target_pct, PROJECTION_YEARS, fx,
+                           interest_rate_pct/100, principal_share_pct/100)
+baseline_df = pd.DataFrame(baseline_rows)
+defined_dscr = [x for x in baseline_df["DSCR (x)"].tolist() if x is not None]
+min_dscr = min(defined_dscr) if defined_dscr else None
+credit_assessment = credit_screen(min_dscr, dscr_threshold) if min_dscr is not None else {
+    "status":"DSCR unavailable", "below_threshold":None,
+    "note":"Debt service is zero, so DSCR is undefined. Review the facility assumptions."
+}
+taxonomy_aligned = tax_assessment["aligned"]
+pricing = illustrative_pricing(taxonomy_aligned, min_dscr if min_dscr is not None else -1,
+                               sbti_target_pct, BASE_MARGIN_BPS, dscr_threshold,
+                               ILLUSTRATIVE_SLL_DISCOUNT_BPS, ILLUSTRATIVE_RISK_PREMIUM_BPS)
+interest_impact = loan_amount * pricing["adjustment_bps"] / 10000
 
-    with st.expander("📖 View HKMA SPM GS-2 & IFRS 9 Methodology & Regulatory Details"):
-        st.markdown("""
-        - **HKMA Supervisory Policy Manual (SPM) GS-2**: Focuses on Climate Risk Management, requiring authorized institutions to robustly assess transition risks and carbon tax financial sensitivities.
-        - **Phase 2A Taxonomy Alignment**: Requires Green CapEx $\ge 30\%$ and SBTi 5-year reduction target $\ge 20\%$ to qualify as Taxonomy Aligned.
-        - **IFRS 9 Staging Trigger**: A Significant Increase in Credit Risk (SICR) forces migration from Stage 1 (12-month ECL) to Stage 2 (Lifetime ECL) if DSCR drops below $1.25\times$ or if the corporate transition plan is non-aligned.
-        """)
-
-    st.markdown("<hr>", unsafe_allow_html=True)
-    st.markdown("### 2. Forward-Looking 5-Year Stress Testing (Carbon Tax Shock)")
-    
-    years = [f"Year {i}" for i in range(1, 6)]
-    annual_reduction_rate = (sbti_input / 100.0) / 5.0 if is_fully_aligned else 0.01
-    
-    sim_data = []
-    current_emissions = emissions_input
-    base_interest_rate = 0.06
-    interest_expense = total_debt_input * base_interest_rate
-    principal_repayment = loan_amount_input * 0.10
-    debt_service = max(interest_expense + principal_repayment, 1.0)
-    
-    dscr_list = []
-    icr_list = []
-    
-    for i, yr in enumerate(years):
-        if i > 0:
-            current_emissions *= (1.0 - annual_reduction_rate)
-            
-        carbon_cost_hkd = (current_emissions * carbon_tax_input * USD_HKD) / 1e6
-        stressed_ebitda = max(ebitda_input - carbon_cost_hkd, 10.0)
-        
-        dscr = stressed_ebitda / debt_service
-        icr = stressed_ebitda / max(interest_expense, 1.0)
-        
-        dscr_list.append(dscr)
-        icr_list.append(icr)
-        
-        sim_data.append({
-            "Year": yr,
-            "Emissions (tCO2e)": round(current_emissions, 0),
-            "Carbon Cost (HKD M)": round(carbon_cost_hkd, 2),
-            "Stressed EBITDA (HKD M)": round(stressed_ebitda, 2),
-            "DSCR (x)": round(dscr, 2),
-            "ICR (x)": round(icr, 2)
-        })
-        
-    df_sim = pd.DataFrame(sim_data)
-    st.dataframe(df_sim, use_container_width=True)
-    
-    min_dscr = min(dscr_list)
-    sicr_triggered = (min_dscr < 1.25) or (not is_fully_aligned)
-    
-    st.markdown("<hr>", unsafe_allow_html=True)
-    st.markdown("### 3. IFRS 9 Staging & SICR Trigger Assessment")
-    if sicr_triggered:
-        dscr_msg = f"Minimum projected DSCR ({round(min_dscr, 2)}x) is below the 1.25x prudential threshold" if min_dscr < 1.25 else ""
-        tax_msg = "Corporate Transition Plan is Non-Aligned with HKMA Phase 2A Taxonomy." if not is_fully_aligned else ""
-        connector_msg = " and/or " if (min_dscr < 1.25 and not is_fully_aligned) else ""
-        
-        st.error(
-            f"🚨 **IFRS 9 SICR TRIGGER WARNING: MIGRATION TO STAGE 2 (Lifetime ECL) REQUIRED**\n\n"
-            f"Reason: {dscr_msg}{connector_msg}{tax_msg}"
-        )
+with tab_overview:
+    st.subheader("Executive summary")
+    m1,m2,m3,m4 = st.columns(4)
+    m1.metric("Minimum projected DSCR", f"{min_dscr:.2f}x" if min_dscr is not None else "N/A",
+              "Below internal screen" if min_dscr is not None and min_dscr < dscr_threshold else "At/above internal screen" if min_dscr is not None else "Undefined")
+    m2.metric("Year 5 emissions", f"{baseline_df.iloc[-1]['Emissions (tCO₂e)']:,.0f} t")
+    m3.metric("Year 5 carbon cost", f"HKD {baseline_df.iloc[-1]['Carbon cost (HKD M)']:,.2f} M")
+    m4.metric("Illustrative final margin", f"{pricing['final_margin_bps']:.0f} bps")
+    st.subheader("Taxonomy evidence review")
+    st.write(f"**Selected framework:** {framework}")
+    st.write(f"**Screening status:** {tax_assessment['status']}")
+    st.write(f"**Green CapEx evidence:** {tax_assessment['capex_test']}")
+    st.write(f"**Transition target evidence:** {tax_assessment['target_test']}")
+    st.info(tax_assessment["note"])
+    if tax_assessment.get("source"):
+        st.markdown(f"Framework reference: [{tax_assessment['source']}]({tax_assessment['source']})")
+    st.subheader("Credit-risk screen (separate from taxonomy)")
+    if min_dscr is not None and min_dscr < dscr_threshold:
+        st.error(f"Minimum projected DSCR of {min_dscr:.2f}x is below the selected internal screening level of {dscr_threshold:.2f}x.")
+    elif min_dscr is not None:
+        st.success(f"Minimum projected DSCR of {min_dscr:.2f}x is at or above the selected internal screening level of {dscr_threshold:.2f}x.")
     else:
-        st.success(
-            "✅ **Credit Risk Standing: STAGE 1 (12-Month ECL)**\n\n"
-            "The corporate borrower maintains robust forward-looking debt service coverage (DSCR ≥ 1.25x) and satisfies HKMA Phase 2A Taxonomy alignment criteria."
-        )
+        st.warning("DSCR is undefined because the modeled debt-service denominator is zero.")
+    st.caption(credit_assessment["note"])
+    st.subheader("Five-year base scenario")
+    st.dataframe(baseline_df, use_container_width=True, hide_index=True)
+    csv = baseline_df.to_csv(index=False).encode("utf-8")
+    st.download_button("Download base scenario CSV", csv, file_name="climatecredit_base_scenario.csv", mime="text/csv")
+    st.caption("All projections are simplified scenario outputs, not forecasts or lending decisions.")
 
-    st.markdown("<hr>", unsafe_allow_html=True)
-    st.markdown("### 4. 5-Year DSCR Trend Visualization")
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=years, y=dscr_list, mode='lines+markers+text',
-        name='Projected DSCR', text=[f"{val:.2f}x" for val in dscr_list],
-        textposition="top center", line=dict(color='#0284c7', width=3), marker=dict(size=8)
-    ))
-    fig.add_hline(
-        y=1.25, line_dash="dash", line_color="#dc2626",
-        annotation_text="Prudential Threshold (1.25x)", annotation_position="bottom right"
-    )
-    fig.update_layout(
-        xaxis_title="Projection Horizon",
-        yaxis_title="Debt Service Coverage Ratio (DSCR)",
-        yaxis=dict(range=[0, max(max(dscr_list) + 0.5, 2.0)]),
-        margin=dict(l=20, r=20, t=30, b=20),
-        height=380,
-        paper_bgcolor='rgba(0,0,0,0)',
-        plot_bgcolor='rgba(0,0,0,0)'
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-    st.markdown("<hr>", unsafe_allow_html=True)
-    st.markdown("### 5. Sensitivity Analysis: Carbon Tax vs. Green CapEx Matrix")
-    st.markdown("Evaluating minimum projected DSCR across varying carbon tax shocks and green capex commitment levels.")
-    
-    tax_range = [30, 60, 90, 120, 150]
-    capex_range = [10, 20, 30, 40, 50]
-    matrix_data = []
-    for c_tax in tax_range:
+with tab_scenarios:
+    st.subheader("Scenario comparison")
+    st.caption("Carbon prices are scaled from the selected input; emissions reduction remains the user-entered five-year target.")
+    scenario_defs = [("Base", 1.0), ("Elevated", 1.5), ("Severe", 2.0)]
+    all_rows = []
+    for label, multiplier in scenario_defs:
+        rows = run_stress(data, carbon_tax*multiplier, sbti_target_pct, PROJECTION_YEARS, fx,
+                          interest_rate_pct/100, principal_share_pct/100)
+        for row in rows:
+            all_rows.append({"Scenario":label, **row})
+    scenario_df = pd.DataFrame(all_rows)
+    summary = scenario_df.groupby("Scenario", sort=False).agg(
+        **{"Carbon price (USD/t)":("Carbon cost (HKD M)", lambda x: round(float(x.iloc[0] / (emissions * fx / 1e6), 2), 2) if emissions > 0 and fx > 0 else 0),
+           "Minimum DSCR (x)":("DSCR (x)", lambda x: round(min([v for v in x if v is not None]), 2) if any(v is not None for v in x) else None),
+           "Year 5 stressed EBITDA (HKD M)":("Stressed EBITDA (HKD M)", "last")}
+    ).reset_index()
+    st.dataframe(summary, use_container_width=True, hide_index=True)
+    chart = px.line(scenario_df, x="Year", y="DSCR (x)", color="Scenario", markers=True,
+                    title="Projected DSCR under carbon-price scenarios")
+    chart.add_hline(y=dscr_threshold, line_dash="dash", annotation_text="Internal screening level")
+    st.plotly_chart(chart, use_container_width=True)
+    st.subheader("Sensitivity matrix")
+    tax_range = sorted(set([0.0, round(carbon_tax*0.5,2), round(carbon_tax,2), round(carbon_tax*1.5,2), round(carbon_tax*2,2)]))
+    capex_range = [0, 20, 30, 40, 60, 80, 100]
+    matrix = []
+    for tax in tax_range:
         row = []
-        for g_capex in capex_range:
-            aligned = g_capex >= 30.0 and sbti_input >= 20.0
-            red_rate = (sbti_input / 100.0) / 5.0 if aligned else 0.01
-            em = emissions_input
-            min_d = 999.0
-            for yr_idx in range(5):
-                if yr_idx > 0: 
-                    em *= (1.0 - red_rate)
-                c_cost = (em * c_tax * USD_HKD) / 1e6
-                st_ebitda = max(ebitda_input - c_cost, 10.0)
-                d = st_ebitda / debt_service
-                if d < min_d: 
-                    min_d = d
-            row.append(round(float(min_d), 2))
-        matrix_data.append(row)
-        
-    df_heat = pd.DataFrame(
-        matrix_data,
-        index=[f"{t} USD/t" for t in tax_range],
-        columns=[f"{x}%" for x in capex_range]
-    )
-    
-    fig_heat = px.imshow(
-        df_heat,
-        labels=dict(x="Green CapEx Ratio", y="Carbon Tax Scenario", color="Min DSCR (x)"),
-        text_auto=True,
-        color_continuousscale="RdYlGn"
-    )
-    fig_heat.update_layout(
-        height=340, 
-        margin=dict(l=20, r=20, t=20, b=20),
-        paper_bgcolor='rgba(0,0,0,0)',
-        plot_bgcolor='rgba(0,0,0,0)'
-    )
-    st.plotly_chart(fig_heat, use_container_width=True)
+        for capex in capex_range:
+            # The custom-policy screen is displayed separately; CapEx does not magically change emissions.
+            rows = run_stress(data, tax, sbti_target_pct, PROJECTION_YEARS, fx,
+                              interest_rate_pct/100, principal_share_pct/100)
+            vals = [r["DSCR (x)"] for r in rows if r["DSCR (x)"] is not None]
+            row.append(round(min(vals),2) if vals else None)
+        matrix.append(row)
+    heat_df = pd.DataFrame(matrix, index=[f"{x:g} USD/t" for x in tax_range],
+                           columns=[f"{x}%" for x in capex_range])
+    heat = px.imshow(heat_df, labels={"x":"Green CapEx ratio (context only)","y":"Carbon price","color":"Minimum DSCR (x)"},
+                     aspect="auto", color_continuous_scale="RdYlGn")
+    st.plotly_chart(heat, use_container_width=True)
+    st.caption("CapEx columns are context-only in this financial sensitivity: no causal emissions benefit is assumed without project-level evidence.")
 
-# ==========================================
-# TAB 2: UNDERWRITING STRUCTURING & SUBSIDIES
-# ==========================================
-with tab2:
-    st.markdown("### 1. Sustainability-Linked Loan (SLL) Dynamic Pricing Engine")
-    
-    base_margin_bps = 250.0
-    
-    if is_fully_aligned and sbti_input >= 25.0:
-        pricing_adjustment = -15.0
-        pricing_status = "🟢 Transition Incentive Discount Applied (-15 bps)"
-    elif not is_fully_aligned or min_dscr < 1.25:
-        pricing_adjustment = 20.0
-        pricing_status = "🔴 Transition Risk Premium Applied (+20 bps)"
-    else:
-        pricing_adjustment = 0.0
-        pricing_status = "⚪ Standard Pricing (Neutral)"
-        
-    final_margin_bps = base_margin_bps + pricing_adjustment
-    annual_interest_impact = (loan_amount_input * 1e6 * (pricing_adjustment / 10000.0))
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown(f"""
-        <div class="card">
-            <h4>Pricing Structure Summary</h4>
-            <p><b>Base Margin:</b> {base_margin_bps:.0f} bps ({base_margin_bps/100:.2f}%)</p>
-            <p><b>Adjustment:</b> {pricing_adjustment:+.0f} bps</p>
-            <p><b>Final Loan Margin:</b> <b>{final_margin_bps:.0f} bps ({final_margin_bps/100:.2f}%)</b></p>
-            <p style="color: #334155; margin-top: 0.5rem;"><b>Status
+with tab_structuring:
+    st.subheader("Illustrative sustainability-linked loan pricing")
+    st.caption("The margin rules below are editable demonstration assumptions, not market quotes or calibrated credit policy.")
+    p1,p2,p3 = st.columns(3)
+    p1.metric("Base margin", f"{pricing['base_margin_bps']:.0f} bps")
+    p2.metric("Illustrative adjustment", f"{pricing['adjustment_bps']:+.0f} bps")
+    p3.metric("Final margin", f"{pricing['final_margin_bps']:.0f} bps")
+    st.write(f"**Rationale:** {pricing['rationale']}")
+    st.write(f"**Annual interest impact at the current loan balance:** HKD {interest_impact:,.2f} million (positive = higher cost; negative = lower cost).")
+    st.markdown("**Separate the concepts**")
+    st.markdown("- Credit-risk pricing should reflect borrower risk, tenor, collateral, seniority, facility terms, and lender policy.")
+    st.markdown("- Any sustainability-linked incentive should be tied to documented KPIs/SPTs, verification, reporting, and contractual consequences.")
+    st.markdown("- Taxonomy eligibility/alignment is not automatically equivalent to creditworthiness or an SLL performance outcome.")
+    with st.expander("Model assumptions and limitations"):
+        st.write(f"- FX: {fx:.3f} HKD/USD (user-editable; not live).")
+        st.write(f"- Interest: {interest_rate_pct:.2f}% of total debt; principal repayment: {principal_share_pct:.2f}% of subject loan each year.")
+        st.write("- Debt service is a simplified proxy, not a contractual amortization schedule.")
+        st.write("- Carbon cost = emissions × carbon price × FX ÷ 1,000,000.")
+        st.write("- Emissions decline linearly and reach the stated reduction target at the end of year five.")
+        st.write("- Negative EBITDA is retained visibly; no artificial floor masks downside.")
+        st.write(f"- DSCR threshold ({dscr_threshold:.2f}x), base margin and pricing adjustments are illustrative internal settings.")
+        st.write("- IFRS 9 SICR and stage must be assessed using the applicable accounting policy and borrower-specific evidence; this app does not determine them.")
+    export = pd.DataFrame([{
+        "Borrower preset":company, "Taxonomy framework":framework, "Taxonomy status":tax_assessment["status"],
+        "Minimum DSCR (x)":min_dscr, "DSCR screen":credit_assessment["status"],
+        "Base margin (bps)":pricing["base_margin_bps"], "Adjustment (bps)":pricing["adjustment_bps"],
+        "Final margin (bps)":pricing["final_margin_bps"], "Annual interest impact (HKD M)":interest_impact,
+        "FX (HKD/USD)":fx, "Carbon price (USD/t)":carbon_tax,
+    }])
+    st.download_button("Download underwriting summary CSV", export.to_csv(index=False).encode("utf-8"),
+                       file_name="climatecredit_underwriting_summary.csv", mime="text/csv")
+
+with tab_feedback:
+    st.subheader("Practitioner feedback")
+    st.write("Use this form to record review feedback on model usefulness and assumptions. Submission is not connected to a backend in this prototype.")
+    with st.form("feedback_form"):
+        role = st.selectbox("Your perspective", ["Credit risk","Relationship manager","Sustainability / ESG","Accounting / finance","Academic / student","Other"])
+        usefulness = st.slider("How useful is the prototype?", 1, 5, 3)
+        priority = st.selectbox("Highest-priority improvement", ["Better source data","More realistic debt schedules","Taxonomy evidence workflow","IFRS 9 governance","Scenario calibration","Reporting / export","User experience"])
+        comments = st.text_area("Comments (optional)")
+        submitted = st.form_submit_button("Prepare feedback summary")
+    if submitted:
+        st.success("Feedback summary prepared below. It has not been transmitted or saved.")
+        st.code(f"Perspective: {role}\nUsefulness: {usefulness}/5\nPriority: {priority}\nComments: {comments or 'None'}")
+
+with st.expander("Methodology references and governance notes"):
+    st.markdown("- [HKMA — Green and Sustainable Finance](https://www.hkma.gov.hk/eng/key-functions/international-financial-centre/green-and-sustainable-finance/)")
+    st.markdown("- [European Commission — EU Taxonomy](https://finance.ec.europa.eu/sustainable-finance/tools-and-standards/eu-taxonomy-sustainable-activities_en)")
+    st.markdown("- [IFRS Foundation — IFRS 9 Financial Instruments](https://www.ifrs.org/issued-standards/list-of-standards/ifrs-9-financial-instruments/)")
+    st.markdown("- [Loan Market Association — Sustainability-Linked Loan Principles](https://www.lma.eu.com/sustainable-lending/resources)")
+    st.caption("Reference links are starting points; check current versions, jurisdictional applicability, and transaction-specific requirements.")
